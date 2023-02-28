@@ -119,12 +119,12 @@ plot(bloom_doy~threshold,data=dc_g3[-2,])
 Kyoto, Japan 2023
 ```{r,echo=T}
 kyoto <- read.csv('/Users/nafeezchowdhury/Documents/STAT 490/kyoto.csv',header=T)
-kyoto1 <- kyoto %>% filter(1990 <= year)
+kyoto1 <- kyoto %>% filter(1970 <= year & year <= 2000)
 
 kyoto_temp <- ghcnd_search(stationid = "JA000047759",
                      var = c("tmax", "tmin"),
-                     date_min = "1990-01-01",
-                     date_max = "2022-12-31") %>%
+                     date_min = "1970-01-01",
+                     date_max = "2000-12-31") %>%
   reduce(left_join) %>%
   transmute(year = parse_number(format(date, "%Y")),
             date, tmax = tmax / 10, tmin = tmin / 10,
@@ -150,7 +150,7 @@ kyoto_year_temps <-
   mutate(`very cold` = jan_temp < 4.6 & feb_temp < 4.6,
          `cold` = jan_temp < 4.6, feb_diff = feb_temp - jan_temp, mar_diff = mar_temp - jan_temp,
          `temp level` = factor(c(ifelse(`cold` == T, "cold", "warm"))), 
-         grp = factor(c(ifelse(mar_diff < 4.7, "g1",ifelse(mar_diff < 6.0,'g2','g3')))))
+         grp = factor(c(ifelse(mar_diff < 2.5, "g1",ifelse(mar_diff < 4.0,'g2','g3')))))
 
 ##########
 
@@ -177,7 +177,7 @@ curve_data1$doy <- parse_number(format(curve_data1$date, "%j")) - 75
 reg_line <- lm(threshold ~ yday(date):year, curve_data1, subset = doy >= 0)$coefficients
 threshold_100_days1 <- reg_line[1] + reg_line[-1]*100
 
-kyoto2 <- kyoto1[-16,] %>% mutate(threshold = threshold_100_days1)
+kyoto2 <- kyoto1 %>% mutate(threshold = threshold_100_days1)
 kyoto2$`temp level` <- kyoto_year_temps$`temp level`
 mod <- lm(kyoto2$bloom_doy~threshold_100_days1)
 summary(mod)
@@ -536,5 +536,5 @@ as.Date(98, origin = "2023-01-01")
 
 ```
 
-The predicted bloom date for Vancouver April 9, 2023 at 98 days.
+The predicted bloom date for Vancouver is April 9, 2023 at 98 days.
 

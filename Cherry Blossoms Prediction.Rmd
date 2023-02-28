@@ -477,10 +477,10 @@ liestal_feb_diff_2023
 liestal_mar_diff_2023 <- mean(mar_2023_avg) - mean(jan_2023_avg) 
 liestal_mar_diff_2023
 
-as.Date(87, origin = "2023-01-01")
+as.Date(95, origin = "2023-01-01")
 ```
 
-There is a moderate threshold at 100 days and the curve is similar in appearance to , so the predicted bloom date for Kyoto, Japan this year is April 9, 2023, at 98 days.
+There is a moderate threshold at 100 days and the curve is similar in appearance to 1995, 1999, and 2016, so the predicted bloom date for Liestal, Switzerland this year is April 6, 2023, at 95 days.
 
 Vancouver, Canada 2023
 ```{r,echo=T}
@@ -536,5 +536,5 @@ as.Date(98, origin = "2023-01-01")
 
 ```
 
-Bloom date is 98 days: April 9, 2023
+The predicted bloom date for Vancouver April 9, 2023 at 98 days.
 

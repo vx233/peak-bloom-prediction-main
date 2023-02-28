@@ -538,3 +538,29 @@ as.Date(98, origin = "2023-01-01")
 
 The predicted bloom date for Vancouver is April 9, 2023 at 98 days.
 
+
+Predicted thresholds for 2024-2032
+```{r,echo=T}
+average_threshold_dc <- c(washingtondc2$threshold[40:41],806.9444) %>% as.numeric()
+for(i in 1:9){
+  average_threshold_dc[i+3] <- mean(c(average_threshold_dc[i],average_threshold_dc[i+1],
+                                    average_threshold_dc[i+2]))
+}
+average_threshold_dc[-c(1:3)]
+
+average_threshold_kyoto <- c(408.2775,299.1662,806.9444) %>% as.numeric()
+for(i in 1:9){
+  average_threshold_kyoto[i+3] <- mean(c(average_threshold_kyoto[i],average_threshold_kyoto[i+1],
+                                      average_threshold_kyoto[i+2]))
+}
+average_threshold_kyoto[-c(1:3)]
+
+average_threshold_liestal <- c(liestal2$threshold[42:43],806.9444) %>% as.numeric()
+for(i in 1:9){
+  average_threshold_liestal[i+3] <- mean(c(average_threshold_liestal[i],average_threshold_liestal[i+1],
+                                         average_threshold_liestal[i+2]))
+}
+average_threshold_liestal[-c(1:3)]
+```
+
+Bloom dates estimated from these predicted thresholds.

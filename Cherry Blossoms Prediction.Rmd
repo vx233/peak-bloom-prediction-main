@@ -1,0 +1,540 @@
+---
+title: "Cherry Blossoms Prediction"
+author: "Nafeez Chowdhury"
+date: "2/28/2023"
+output: html_document
+---
+Model
+
+```{r,echo=T}
+library(knitr)
+library(tidyverse)
+library(rnoaa)
+library(rnpn)
+library(rvest)
+library(Hmisc)
+library(caret)
+library(lubridate)
+theme_set(theme_bw(base_size = 20))
+```
+
+Washington, DC 2023
+```{r,echo=T}
+washingtondc <- read.csv('/Users/nafeezchowdhury/Documents/STAT 490/washingtondc.csv',header=T)
+washingtondc1 <- washingtondc %>% filter(year >= 1980)
+
+dc_temp <- ghcnd_search(stationid = "USC00186350",
+                     var = c("tmax", "tmin"),
+                     date_min = "1980-01-01",
+                     date_max = "2022-12-31") %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")),
+            date, tmax = tmax / 10, tmin = tmin / 10,
+            temp = (tmax + tmin) / 2)
+dc_temp %>% slice(1:4) %>% select(year, date, temp) %>%
+  kable(align = "c", col.names =
+          c("year", "date", "midrange temperature °C"))
+
+#########
+dc_year_temps <-
+  dc_temp %>% 
+  mutate(doy_start = parse_number(format(date, "%j"))) %>%
+  group_by(year) %>% 
+  nest() %>%
+  mutate(jan_temp = map(data, ~ mean(.$temp[1:30], na.rm = TRUE)),
+         feb_temp = map(data, ~ mean(.$temp[31:60], na.rm = TRUE)),
+         mar_temp = map(data, ~ mean(.$temp[61:90], na.rm = TRUE))) %>% 
+  unnest(jan_temp) %>% 
+  unnest(feb_temp) %>%
+  unnest(mar_temp) %>%
+  ungroup() %>%
+  mutate(`very cold` = jan_temp < 4.6 & feb_temp < 4.6,
+         `cold` = jan_temp < 4.6, feb_diff = feb_temp - jan_temp, mar_diff = mar_temp - jan_temp,
+         `temp level` = factor(c(ifelse(`cold` == T, "cold", "warm"))), 
+         grp = factor(c(ifelse(mar_diff < 4.7, "g1",ifelse(mar_diff < 7.2,'g2','g3')))))
+#########
+
+dc_sum_temps <- dc_temp %>% na.omit() %>% select(year,date,temp) %>% group_by(year) %>% 
+  filter(1 <= yday(date) & yday(date) <= 100) %>%
+  mutate(threshold = cumsum(temp))
+dc_sum_temps1 <- dc_sum_temps %>% group_by(year) %>% nest() %>% left_join(washingtondc1) %>%
+  ungroup()
+
+vline_data <- data.frame(year = dc_sum_temps1$year, vline = dc_sum_temps1$bloom_doy)
+curve_data <- dc_sum_temps1 %>% pull(data) %>% reduce(bind_rows) %>% mutate(year = format(date, "%Y"))
+
+dc_csum_plot <- ggplot() + 
+  geom_smooth(aes(x=yday(date),y=threshold,color=), data = curve_data) +
+  geom_vline(aes(xintercept = vline), data = vline_data, linetype = 2) +
+  facet_wrap(~year) + 
+  theme_bw() +
+  geom_smooth(method = "lm", aes(x=yday(date),y=threshold), 
+              data = curve_data %>% mutate(doy = parse_number(format(date, "%j"))) %>% filter(doy >= 75), 
+              color = "red") + coord_cartesian(ylim=c(0,800))
+dc_csum_plot
+#########
+
+curve_data$doy <- parse_number(format(curve_data$date, "%j")) - 75
+reg_line <- lm(threshold ~ yday(date):year, curve_data, subset = doy >= 0)$coefficients
+threshold_100_days <- reg_line[1] + reg_line[-1]*100
+
+washingtondc2 <- washingtondc1[-23,] %>% mutate(threshold = threshold_100_days)
+washingtondc2$`temp level` <- dc_year_temps$`temp level`[-23]
+mod <- lm(washingtondc2$bloom_doy~threshold_100_days)
+summary(mod)
+dcplot <- ggplot(washingtondc2,aes(x=threshold,y=bloom_doy,color=`temp level`)) +
+  geom_point() + theme_bw() +
+  geom_text(aes(label=year),hjust=0, vjust=0)
+dcplot
+########
+
+dc_year_temps[-23,] %>% ggplot(aes(x=feb_diff,y=mar_diff,color=grp)) + geom_point() + 
+  geom_text(aes(label=year,hjust=-0.5, vjust=0)) +
+  geom_text(aes(label=washingtondc2$bloom_doy),hjust=1.3, vjust=0) +
+  geom_text(aes(label=signif(washingtondc2$threshold,3)),hjust=1.3, vjust=1.3)
+
+dc_g1 <- dc_year_temps[-23,] %>% mutate(bloom_doy = washingtondc2$bloom_doy, threshold = washingtondc2$threshold) %>% 
+  filter(grp == 'g1')
+dc_g2 <- dc_year_temps[-23,] %>% mutate(bloom_doy = washingtondc2$bloom_doy, threshold = washingtondc2$threshold) %>% 
+  filter(grp == 'g2')
+dc_g3 <- dc_year_temps[-23,] %>% mutate(bloom_doy = washingtondc2$bloom_doy, threshold = washingtondc2$threshold) %>% 
+  filter(grp == 'g3')
+
+washingtondc2 %>% ggplot(aes(x=threshold,y=bloom_doy,color=dc_year_temps$grp[-23])) + 
+  geom_smooth(method='lm') + labs(y='bloom day of year',color='Group')
+
+dc_temp_g1 <- lm(bloom_doy~threshold,data=dc_g1[-c(1,4),])
+summary(dc_temp_g1)
+plot(bloom_doy~threshold,data=dc_g1[-c(1,4),])
+dc_temp_g2 <- lm(bloom_doy~threshold,data=dc_g2[-3,])
+summary(dc_temp_g2)
+plot(bloom_doy~threshold,data=dc_g2[-3,])
+dc_temp_g3 <- lm(bloom_doy~threshold,data=dc_g3[-2,])
+summary(dc_temp_g3)
+plot(bloom_doy~threshold,data=dc_g3[-2,])
+```
+
+
+
+Kyoto, Japan 2023
+```{r,echo=T}
+kyoto <- read.csv('/Users/nafeezchowdhury/Documents/STAT 490/kyoto.csv',header=T)
+kyoto1 <- kyoto %>% filter(1990 <= year)
+
+kyoto_temp <- ghcnd_search(stationid = "JA000047759",
+                     var = c("tmax", "tmin"),
+                     date_min = "1990-01-01",
+                     date_max = "2022-12-31") %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")),
+            date, tmax = tmax / 10, tmin = tmin / 10,
+            temp = (tmax + tmin) / 2)
+kyoto_temp %>% slice(1:4) %>% select(year, date, temp) %>%
+  kable(align = "c", col.names =
+          c("year", "date", "midrange temperature °C"))
+
+##########
+
+kyoto_year_temps <-
+  kyoto_temp %>% 
+  mutate(doy_start = parse_number(format(date, "%j"))) %>%
+  group_by(year) %>% 
+  nest() %>%
+  mutate(jan_temp = map(data, ~ mean(.$temp[1:30], na.rm = TRUE)),
+         feb_temp = map(data, ~ mean(.$temp[31:60], na.rm = TRUE)),
+         mar_temp = map(data, ~ mean(.$temp[61:90], na.rm = TRUE))) %>% 
+  unnest(jan_temp) %>% 
+  unnest(feb_temp) %>%
+  unnest(mar_temp) %>%
+  ungroup() %>%
+  mutate(`very cold` = jan_temp < 4.6 & feb_temp < 4.6,
+         `cold` = jan_temp < 4.6, feb_diff = feb_temp - jan_temp, mar_diff = mar_temp - jan_temp,
+         `temp level` = factor(c(ifelse(`cold` == T, "cold", "warm"))), 
+         grp = factor(c(ifelse(mar_diff < 4.7, "g1",ifelse(mar_diff < 6.0,'g2','g3')))))
+
+##########
+
+kyoto_sum_temps <- kyoto_temp %>% na.omit() %>% select(year,date,temp) %>% group_by(year) %>% 
+  filter(1 <= yday(date) & yday(date) <= 100) %>%
+  mutate(threshold = cumsum(temp))
+kyoto_sum_temps1 <- kyoto_sum_temps %>% group_by(year) %>% nest() %>% left_join(kyoto1) %>%
+  ungroup()
+
+vline_data1 <- data.frame(year = kyoto_sum_temps1$year, vline = kyoto_sum_temps1$bloom_doy)
+curve_data1 <- kyoto_sum_temps1 %>% pull(data) %>% reduce(bind_rows) %>% mutate(year = format(date, "%Y"))
+
+kyoto_csum_plot <- ggplot() + 
+  geom_smooth(aes(x=yday(date),y=threshold,color=), data = curve_data1) +
+  geom_vline(aes(xintercept = vline), data = vline_data1, linetype = 2) +
+  facet_wrap(~year) + 
+  theme_bw() +
+  geom_smooth(method = "lm", aes(x=yday(date),y=threshold), 
+              data = curve_data1 %>% mutate(doy = parse_number(format(date, "%j"))) %>% filter(doy >= 75), 
+              color = "red") + coord_cartesian(ylim=c(0,800))
+kyoto_csum_plot
+
+curve_data1$doy <- parse_number(format(curve_data1$date, "%j")) - 75
+reg_line <- lm(threshold ~ yday(date):year, curve_data1, subset = doy >= 0)$coefficients
+threshold_100_days1 <- reg_line[1] + reg_line[-1]*100
+
+kyoto2 <- kyoto1[-16,] %>% mutate(threshold = threshold_100_days1)
+kyoto2$`temp level` <- kyoto_year_temps$`temp level`
+mod <- lm(kyoto2$bloom_doy~threshold_100_days1)
+summary(mod)
+kyotoplot <- ggplot(kyoto2,aes(x=threshold,y=bloom_doy,color=`temp level`)) +
+  geom_point() + theme_bw() +
+  geom_text(aes(label=year),hjust=0, vjust=0)
+kyotoplot
+
+
+ggplot(kyoto_year_temps,aes(x=feb_diff,y=mar_diff,color=grp)) + geom_point() + 
+  geom_text(aes(label=year,hjust=-0.5, vjust=0)) +
+  geom_text(aes(label=kyoto2$bloom_doy),hjust=1.3, vjust=0) +
+  geom_text(aes(label=signif(kyoto2$threshold,3)),hjust=1.3, vjust=1.3)
+
+kyoto_g1 <- kyoto_year_temps %>% mutate(bloom_doy = kyoto2$bloom_doy, threshold = kyoto2$threshold) %>% 
+  filter(grp == 'g1')
+kyoto_g2 <- kyoto_year_temps %>% mutate(bloom_doy = kyoto2$bloom_doy, threshold = kyoto2$threshold) %>% 
+  filter(grp == 'g2')
+kyoto_g3 <- kyoto_year_temps %>% mutate(bloom_doy = kyoto2$bloom_doy, threshold = kyoto2$threshold) %>% 
+  filter(grp == 'g3')
+
+kyoto2 %>% ggplot(aes(x=threshold,y=bloom_doy,color=kyoto_year_temps$grp)) + 
+  geom_smooth(method='lm') + labs(y='bloom day of year',color='Group')
+
+kyoto_temp_g1 <- lm(bloom_doy~threshold,data=kyoto_g1)
+summary(kyoto_temp_g1)
+plot(bloom_doy~threshold,data=kyoto_g1)
+kyoto_temp_g2 <- lm(bloom_doy~threshold,data=kyoto_g2)
+summary(kyoto_temp_g2)
+plot(bloom_doy~threshold,data=kyoto_g2)
+kyoto_temp_g3 <- lm(bloom_doy~threshold,data=kyoto_g3)
+summary(kyoto_temp_g3)
+plot(bloom_doy~threshold,data=kyoto_g3)
+```
+
+
+
+Liestal, Switzerland 2023
+```{r,echo=T}
+liestal <- read.csv('/Users/nafeezchowdhury/Documents/STAT 490/liestal.csv',header=T)
+liestal1 <- liestal %>% filter(1980 <= year)
+
+liestal_temp <- ghcnd_search(stationid = "SZ000001940",
+                           var = c("tmax", "tmin"),
+                           date_min = "1980-01-01",
+                           date_max = "2022-12-31") %>%
+  reduce(left_join) %>%
+  transmute(year = parse_number(format(date, "%Y")),
+            date, tmax = tmax / 10, tmin = tmin / 10,
+            temp = (tmax + tmin) / 2)
+liestal_temp %>% slice(1:4) %>% select(year, date, temp) %>%
+  kable(align = "c", col.names =
+          c("year", "date", "midrange temperature °C"))
+
+##########
+
+liestal_year_temps <-
+  liestal_temp %>% 
+  mutate(doy_start = parse_number(format(date, "%j"))) %>%
+  group_by(year) %>% 
+  nest() %>%
+  mutate(jan_temp = map(data, ~ mean(.$temp[1:30], na.rm = TRUE)),
+         feb_temp = map(data, ~ mean(.$temp[31:60], na.rm = TRUE)),
+         mar_temp = map(data, ~ mean(.$temp[61:90], na.rm = TRUE))) %>% 
+  unnest(jan_temp) %>% 
+  unnest(feb_temp) %>%
+  unnest(mar_temp) %>%
+  ungroup() %>%
+  mutate(`very cold` = jan_temp < 4.6 & feb_temp < 4.6,
+         `cold` = jan_temp < 4.6, feb_diff = feb_temp - jan_temp, mar_diff = mar_temp - jan_temp,
+         `temp level` = factor(c(ifelse(`cold` == T, "cold", "warm"))), 
+         grp = factor(c(ifelse(mar_diff < 4.0, "g1",ifelse(mar_diff < 5.2,'g2','g3')))))
+
+##########
+
+liestal_sum_temps <- liestal_temp %>% na.omit() %>% select(year,date,temp) %>% group_by(year) %>% 
+  filter(1 <= yday(date) & yday(date) <= 115) %>%
+  mutate(threshold = cumsum(temp))
+liestal_sum_temps1 <- liestal_sum_temps %>% group_by(year) %>% nest() %>% left_join(liestal1) %>%
+  ungroup()
+
+vline_data3 <- data.frame(year = liestal_sum_temps1$year, vline = liestal_sum_temps1$bloom_doy)
+curve_data3 <- liestal_sum_temps1 %>% pull(data) %>% reduce(bind_rows) %>% mutate(year = format(date, "%Y"))
+
+liestal_csum_plot <- ggplot() +
+  geom_smooth(aes(x=yday(date),y=threshold), data = curve_data3) +
+  geom_vline(aes(xintercept = vline), data = vline_data3, linetype = 2) +
+  facet_wrap(~year) + 
+  theme_bw() +
+  geom_smooth(method = "lm", aes(x=yday(date),y=threshold), 
+              data = curve_data3 %>% mutate(doy = parse_number(format(date, "%j"))) %>% filter(doy >= 75), 
+              color = "red") + coord_cartesian(xlim=c(0,100))
+liestal_csum_plot
+
+curve_data3$doy <- parse_number(format(curve_data3$date, "%j")) - 75
+reg_line3 <- lm(threshold ~ yday(date):year, curve_data3, subset = doy >= 0)$coefficients
+threshold_100_days3 <- reg_line3[1] + reg_line3[-1]*100
+
+liestal2 <- liestal1 %>% mutate(threshold = threshold_100_days3)
+liestal2$`temp level` <- liestal_year_temps$`temp level`
+
+mod <- lm(liestal2$bloom_doy~threshold_100_days3)
+summary(mod)
+plot(liestal2$bloom_doy~threshold_100_days3)
+identify(threshold_100_days3,liestal2$bloom_doy,label=liestal2$year)
+
+ggplot(liestal_year_temps,aes(x=feb_diff,y=mar_diff,color=grp)) + geom_point() + 
+  geom_text(aes(label=year,hjust=-0.5, vjust=0)) +
+  geom_text(aes(label=liestal2$bloom_doy),hjust=1.3, vjust=0) +
+  geom_text(aes(label=signif(liestal2$threshold,3)),hjust=1.3, vjust=1.3)
+
+liestal_g1 <- liestal_year_temps %>% mutate(bloom_doy = liestal2$bloom_doy, threshold = liestal2$threshold) %>% 
+  filter(grp == 'g1')
+liestal_g2 <- liestal_year_temps %>% mutate(bloom_doy = liestal2$bloom_doy, threshold = liestal2$threshold) %>% 
+  filter(grp == 'g2')
+liestal_g3 <- liestal_year_temps %>% mutate(bloom_doy = liestal2$bloom_doy, threshold = liestal2$threshold) %>% 
+  filter(grp == 'g3')
+
+liestal2 %>% ggplot(aes(x=threshold,y=bloom_doy,color=liestal_year_temps$grp)) + 
+  geom_smooth(method='lm') + labs(y='bloom day of year',color='Group')
+
+liestal_temp_g1 <- lm(bloom_doy~threshold,data=liestal_g1)
+summary(liestal_temp_g1)
+plot(bloom_doy~threshold,data=liestal_g1)
+liestal_temp_g2 <- lm(bloom_doy~threshold,data=liestal_g2)
+summary(liestal_temp_g2)
+plot(bloom_doy~threshold,data=liestal_g2)
+liestal_temp_g3 <- lm(bloom_doy~threshold,data=liestal_g3)
+summary(liestal_temp_g3)
+plot(bloom_doy~threshold,data=liestal_g3)
+```
+
+
+Prediction
+
+Washington, DC 2023
+```{r,echo=T}
+jan_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/DC_Jan_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+jan_2023_avg <- ((jan_2023[,1]-32)*5/9 + (jan_2023[,2]-32)*5/9) / 2
+
+
+feb_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/DC_Feb_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+feb_2023_avg <- ((feb_2023[,1]-32)*5/9 + (feb_2023[,2]-32)*5/9) / 2
+
+
+mar_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/DC_Mar_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+mar_2023_avg <- ( (mar_2023[,1] - 32) * 5/9 + (mar_2023[,2] - 32) * 5/9) / 2
+
+apr_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/DC_Apr_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:6,37:42),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+apr_2023_avg <- ((apr_2023[,1]-32)*5/9 + (apr_2023[,2]-32)*5/9) / 2
+
+dc_first_4_months <- c(jan_2023_avg,feb_2023_avg,mar_2023_avg,apr_2023_avg) %>% cumsum()
+dc_year_2023 <- data.frame(doy = 1:120, threshold = dc_first_4_months)
+
+dc_curve_data_2023 <- dc_year_2023
+
+ggplot() + 
+  geom_point(aes(x=doy,y=threshold), data = dc_year_2023 %>% filter(doy < 58), color = "black") + 
+  geom_point(aes(x=doy,y=threshold), data = dc_year_2023 %>% filter(doy >= 58), color = "blue") + 
+  coord_cartesian(xlim=c(0,100),ylim=c(0,800)) +
+  geom_smooth(aes(x=doy,y=threshold), data=dc_curve_data_2023 %>% filter(doy>=75),
+              method='lm',color='red', se = FALSE) +
+  labs(x = "number of days since January 1st", y = "cumulative temperatures\nobserved (black) and forecasted (blue)")
+
+
+dc_feb_diff_2023 <- mean(feb_2023_avg) - mean(jan_2023_avg)
+dc_feb_diff_2023
+dc_mar_diff_2023 <- mean(mar_2023_avg) - mean(jan_2023_avg)
+dc_mar_diff_2023
+
+as.Date(75, origin = "2023-01-01")
+```
+
+There is a high threshold at 100 days and the curve is similar in appearance to 1990, so the predicted bloom date for Washington, DC this year is March 17, 2023, at 75 days.
+
+
+Kyoto, Japan 2023
+```{r,echo=T}
+jan_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Kyoto_Jan_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+jan_2023_avg <- ((jan_2023[,1]-32)*5/9 + (jan_2023[,2]-32)*5/9) / 2
+
+
+feb_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Kyoto_Feb_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+feb_2023_avg <- ((feb_2023[,1]-32)*5/9 + (feb_2023[,2]-32)*5/9) / 2
+
+
+mar_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Kyoto_Mar_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+mar_2023_avg <- ((mar_2023[,1]-32)*5/9 + (mar_2023[,2]-32)*5/9) / 2
+
+apr_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Kyoto_Apr_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:6,37:42),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+apr_2023_avg <- ((apr_2023[,1]-32)*5/9 + (apr_2023[,2]-32)*5/9) / 2
+
+kyoto_first_4_months <- c(jan_2023_avg,feb_2023_avg,mar_2023_avg,apr_2023_avg) %>% cumsum()
+kyoto_year_2023 <- data.frame(doy = 1:120, threshold = kyoto_first_4_months)
+
+kyoto_curve_data_2023 <- kyoto_year_2023
+
+ggplot() + 
+  geom_point(aes(x=doy,y=threshold), data = kyoto_year_2023 %>% filter(doy < 58), color = "black") + 
+  geom_point(aes(x=doy,y=threshold), data = kyoto_year_2023 %>% filter(doy >= 58), color = "blue") + 
+  coord_cartesian(xlim=c(0,100),ylim=c(0,800)) +
+  geom_smooth(aes(x=doy,y=threshold), data=kyoto_curve_data_2023 %>% filter(doy>=75),
+              method='lm',color='red', se = FALSE) +
+  labs(x = "number of days since January 1st", y = "cumulative temperatures\nobserved (black) and forecasted (blue)")
+
+
+kyoto_feb_diff_2023 <- mean(feb_2023_avg) - mean(jan_2023_avg)
+kyoto_feb_diff_2023
+kyoto_mar_diff_2023 <- mean(mar_2023_avg) - mean(jan_2023_avg) 
+kyoto_mar_diff_2023
+
+as.Date(98, origin = "2023-01-01")
+```
+
+There is a high threshold at 100 days and the curve is similar in appearance to 1972,1973, and 1979, so the predicted bloom date for Kyoto, Japan this year is April 9, 2023, at 98 days.
+
+
+Liestal, Switzerland 2023
+```{r,echo=T}
+jan_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Liestal_Jan_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+jan_2023_avg <- ((jan_2023[,1]-32)*5/9 + (jan_2023[,2]-32)*5/9) / 2
+
+
+feb_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Liestal_Feb_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+feb_2023_avg <- ((feb_2023[,1]-32)*5/9 + (feb_2023[,2]-32)*5/9) / 2
+
+
+mar_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Liestal_Mar_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+mar_2023_avg <- ((mar_2023[,1]-32)*5/9 + (mar_2023[,2]-32)*5/9) / 2
+
+apr_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Liestal_Apr_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:6,37:42),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+apr_2023_avg <- ((apr_2023[,1]-32)*5/9 + (apr_2023[,2]-32)*5/9) / 2
+
+liestal_first_4_months <- c(jan_2023_avg,feb_2023_avg,mar_2023_avg,apr_2023_avg) %>% cumsum()
+liestal_year_2023 <- data.frame(doy = 1:120, threshold = liestal_first_4_months)
+
+liestal_curve_data_2023 <- liestal_year_2023
+
+ggplot() + 
+  geom_point(aes(x=doy,y=threshold), data = liestal_year_2023 %>% filter(doy < 58), color = "black") + 
+  geom_point(aes(x=doy,y=threshold), data = liestal_year_2023 %>% filter(doy >= 58), color = "blue") + 
+  coord_cartesian(xlim=c(0,100),ylim=c(0,800)) +
+  geom_smooth(aes(x=doy,y=threshold), data=liestal_curve_data_2023 %>% filter(doy>=75),
+              method='lm',color='red', se = FALSE) +
+  labs(x = "number of days since January 1st", y = "cumulative temperatures\nobserved (black) and forecasted (blue)")
+
+liestal_feb_diff_2023 <- mean(feb_2023_avg) - mean(jan_2023_avg)
+liestal_feb_diff_2023
+liestal_mar_diff_2023 <- mean(mar_2023_avg) - mean(jan_2023_avg) 
+liestal_mar_diff_2023
+
+as.Date(87, origin = "2023-01-01")
+```
+
+There is a moderate threshold at 100 days and the curve is similar in appearance to , so the predicted bloom date for Kyoto, Japan this year is April 9, 2023, at 98 days.
+
+Vancouver, Canada 2023
+```{r,echo=T}
+jan_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Vancouver_Jan_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+jan_2023_avg <- ((jan_2023[,1]-32)*5/9 + (jan_2023[,2]-32)*5/9) / 2
+
+
+feb_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Vancouver_Feb_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,32:35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+feb_2023_avg <- ((feb_2023[,1]-32)*5/9 + (feb_2023[,2]-32)*5/9) / 2
+
+
+mar_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Vancouver_Mar_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:3,35),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+mar_2023_avg <- ((mar_2023[,1]-32)*5/9 + (mar_2023[,2]-32)*5/9) / 2
+
+apr_2023 <- read_html('/Users/nafeezchowdhury/Documents/STAT 490/Vancouver_Apr_Temps_2023.html') %>%
+  html_nodes('div.monthly-calendar') %>%
+  html_text2() %>% str_split('° ') %>% unlist() %>% str_split(' ') %>% unlist() %>%
+  matrix(ncol=3,byrow=T) %>% .[,-1] %>% .[-c(1:6,37:42),] %>% as.numeric() %>% 
+  matrix(ncol=2,byrow=F)
+apr_2023_avg <- ((apr_2023[,1]-32)*5/9 + (apr_2023[,2]-32)*5/9) / 2
+
+vancouver_first_4_months <- c(jan_2023_avg,feb_2023_avg,mar_2023_avg,apr_2023_avg) %>% cumsum()
+vancouver_year_2023 <- data.frame(doy = 1:120, threshold = vancouver_first_4_months)
+
+vancouver_curve_data_2023 <- vancouver_year_2023
+
+ggplot() + 
+  geom_point(aes(x=doy,y=threshold), data = vancouver_year_2023 %>% filter(doy < 58), color = "black") + 
+  geom_point(aes(x=doy,y=threshold), data = vancouver_year_2023 %>% filter(doy >= 58), color = "blue") + 
+  coord_cartesian(xlim=c(0,100),ylim=c(0,800)) +
+  geom_smooth(aes(x=doy,y=threshold), data=vancouver_curve_data_2023 %>% filter(doy>=75),
+              method='lm',color='red', se = FALSE) +
+  labs(x = "number of days since January 1st", y = "cumulative temperatures\nobserved (black) and forecasted (blue)")
+
+vancouver_feb_diff_2023 <- mean(feb_2023_avg) - mean(jan_2023_avg)
+vancouver_feb_diff_2023
+vancouver_mar_diff_2023 <- mean(mar_2023_avg) - mean(jan_2023_avg) 
+vancouver_mar_diff_2023
+
+as.Date(98, origin = "2023-01-01")
+
+```
+
+Bloom date is 98 days: April 9, 2023
+
